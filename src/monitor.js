@@ -669,7 +669,10 @@ export async function processOneTick(state, tmuxAdapter, pane, config, isAlive, 
   return 'monitoring';
 }
 
-export async function startMonitor(pane, pid) {
+// `overrides` lets a host that already owns the terminal supply its own pane adapter
+// instead of the tmux one — see src/win-pane.js, where the "pane" is a ConPTY the wrapper
+// hosts in-process. Everything below is platform-neutral once the adapter is chosen.
+export async function startMonitor(pane, pid, overrides = {}) {
   const config = await loadConfig();
   const logger = createLogger();
   const state = createMonitorState();
@@ -697,7 +700,7 @@ export async function startMonitor(pane, pid) {
   process.on('SIGINT', () => shutdown('SIGINT'));
 
   const eventMaxAgeMs = (config.overload?.eventMaxAgeSeconds || 120) * 1000;
-  const tmuxAdapter = {
+  const tmuxAdapter = overrides.adapter ?? {
     capturePane, sendKeys, sendKey, getPaneCommand,
     isClaudeForeground: () => isProcessForeground(pid),
     // Pane-keyed StopFailure markers (written by the hook). The daemon owns the pane,
@@ -705,7 +708,7 @@ export async function startMonitor(pane, pid) {
     readEvent: () => readStopFailureEvent(pane, eventMaxAgeMs),
     clearEvent: () => clearStopFailureEvent(pane),
   };
-  const isAlive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const isAlive = overrides.isAlive ?? (() => { try { process.kill(pid, 0); return true; } catch { return false; } });
 
   const loop = async () => {
     try {

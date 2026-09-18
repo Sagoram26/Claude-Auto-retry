@@ -15,8 +15,12 @@ const __dirname = dirname(__filename);
 const MONITOR_PATH = join(__dirname, 'monitor.js');
 
 function findClaudeBinary() {
+  // `which` is not a Windows command, and the answer there must be a real .exe path:
+  // ConPTY spawns the image directly, with no shell to resolve PATHEXT for it.
+  const [prog, arg] = process.platform === 'win32' ? ['where', 'claude'] : ['which', 'claude'];
   try {
-    return execFileSync('which', ['claude'], { encoding: 'utf-8' }).trim();
+    const found = execFileSync(prog, [arg], { encoding: 'utf-8' }).trim().split(/\r?\n/)[0];
+    return found || 'claude';
   } catch {
     return 'claude';
   }
@@ -377,6 +381,19 @@ export function chooseLaunchMode(args, env = process.env) {
   return 'tmux-session';
 }
 
+// Windows has no tmux, and no port could host claude.exe if it did — a Win32 console
+// application needs a ConPTY, not a Cygwin pty. So the two modes that assume a pane
+// ('tmux-session', and 'interactive', which forks a monitor that would drive one) become
+// the ConPTY mode instead; 'print' spawns no pane and is unchanged.
+//
+// Kept apart from chooseLaunchMode so that function stays a pure statement of the POSIX
+// rules, unchanged and asserted by the existing tests on every platform.
+export function resolveWindowsMode(mode, env = process.env, platform = process.platform) {
+  if (platform !== 'win32' || mode === 'print') return mode;
+  if (env.CLAUDE_AUTO_RETRY_NO_CONPTY) return 'unwrapped';
+  return 'conpty';
+}
+
 // Main — only when executed directly (`node launcher.js …`), never when imported for its
 // exported helpers (e.g. resolveLaunchCommand under test).
 const isDirectRun = process.argv[1]?.endsWith('launcher.js');
@@ -387,11 +404,16 @@ if (isDirectRun) {
   // (config load, claude spawn, monitor fork all inherit from here).
   consumeEnvSnapshot(process.env);
 
-  const mode = chooseLaunchMode(args);
+  const mode = resolveWindowsMode(chooseLaunchMode(args));
   let exitCode;
   if (mode === 'print') {
     exitCode = await launchPrintMode(args);
-  } else if (mode === 'interactive') {
+  } else if (mode === 'conpty') {
+    const { launchConpty } = await import('./win-launch.js');
+    exitCode = await launchConpty(findClaudeBinary(), args);
+  } else if (mode === 'interactive' || mode === 'unwrapped') {
+    // 'unwrapped' is the Windows opt-out: getCurrentPane() is null off tmux, so
+    // launchInteractive spawns claude and forks no monitor.
     exitCode = await launchInteractive(args);
   } else {
     exitCode = await createTmuxSession(args);

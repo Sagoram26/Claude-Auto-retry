@@ -10,6 +10,10 @@
   "scripts": {
     "test": "node --test test/*.test.js"
   },
+  "optionalDependencies": {
+    "@xterm/headless": "^6.0.0",
+    "node-pty": "^1.1.0"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
@@ -35,5 +39,8 @@
     "README.md",
     "CHANGELOG.md",
     "llms.txt"
-  ]
+  ],
+  "allowScripts": {
+    "node-pty@1.1.0": true
+  }
 }
