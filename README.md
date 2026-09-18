@@ -2,9 +2,11 @@
 
 > Automatically retry Claude Code sessions when you hit Anthropic subscription rate limits.
 
+**This is a fork of [cheapestinference/claude-auto-retry](https://github.com/cheapestinference/claude-auto-retry)** (MIT), which is the original project and where the detection engine, the reset-time parser and the tmux backend come from. This fork adds native Windows support through ConPTY, so the tool no longer needs tmux or WSL, and carries two fixes that apply to every platform. See [Windows (native)](#windows-native) and the CHANGELOG.
+
 When Claude Code shows *"5-hour limit reached - resets 3pm"*, this tool waits for the reset and sends "continue" automatically. You come back to find your work done.
 
-**No dependencies. No workflow change. Just install and forget.**
+**No workflow change. Just install and forget.** No dependencies on POSIX; Windows pulls in two optional ones (`node-pty`, `@xterm/headless`) for the ConPTY backend.
 
 [![npm version](https://img.shields.io/npm/v/claude-auto-retry.svg)](https://www.npmjs.com/package/claude-auto-retry)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -638,10 +640,46 @@ pruned, since staleness can't be detected). Prefer the PID form; you can also ha
 | Alpine | `apk` | Fully supported |
 | Windows | — (not used) | Supported natively via ConPTY — see below. WSL2 also works, as on Linux. |
 
+### Windows (native)
+
+Windows needs no tmux. `claude.exe` is a Win32 console application, so the wrapper hosts it
+in a **ConPTY** pseudo-console and mirrors its output into an off-screen terminal buffer —
+the same screen the monitor would have read from a tmux pane. Detection, reset-time parsing
+and the `/rate-limit-options` menu handling are the shared code paths, unchanged.
+
+```powershell
+npm install -g claude-auto-retry
+claude-auto-retry install          # adds a claude function to your PowerShell profile
+```
+
+The install writes to `$PROFILE.CurrentUserAllHosts` for each PowerShell edition present,
+and to `~/.bashrc` as well if you use Git Bash. Open a new terminal afterwards. If the
+profile does not load, PowerShell's execution policy is blocking it:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+Differences from the tmux backend:
+
+- The monitor runs inside the wrapper process rather than as a detached daemon, so there
+  are no pane ids to correlate and nothing to reap. `reconcile`, `install-timer` and the
+  tmux status-bar segment are tmux-only and do nothing here. A monitor therefore does not
+  survive its wrapper: there is no crash-recovery path on Windows.
+- Before typing a retry the wrapper checks that the input box is empty, so it never lands
+  on top of a half-written prompt. The `/rate-limit-options` menu is exempt: it replaces
+  the input box.
+- Redirected output (`claude ... > out.txt`) runs claude unwrapped, because a pseudo-console
+  emits control sequences whatever the sink is. Set `CLAUDE_AUTO_RETRY_NO_CONPTY=1` to opt
+  out for a whole session.
+- Every byte of output passes through a terminal emulator, which costs some CPU on very
+  large renders.
+
 ### Requirements
 
 - **Node.js** >= 18
-- **tmux** >= 2.1 (auto-installed if missing)
+- **tmux** >= 2.1 (auto-installed if missing) — POSIX only
+- **Windows only:** `node-pty` and `@xterm/headless`, installed as optional dependencies
 
 ### Shell Support
 
