@@ -7,7 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Native Windows support, via ConPTY instead of tmux.** tmux has no native Windows port,
+  and one would not have helped: `claude.exe` is a Win32 console application, so it needs a
+  ConPTY pseudo-console rather than a Cygwin pty. The monitor never spoke to tmux directly
+  — `processOneTick` already received an adapter object — so the platform dependency was
+  confined to a handful of methods. `src/win-pane.js` implements them over `node-pty`, with
+  an off-screen `@xterm/headless` terminal standing in for the tmux screen buffer, and
+  `src/win-launch.js` hosts claude in that pty, proxies the real terminal in both
+  directions, and runs the monitor in-process. Detection, reset-time parsing and the
+  `/rate-limit-options` menu handling are the existing code paths, unchanged.
+
+  `capture-pane` becomes a read of the *resolved cells* rather than of the escape stream:
+  Ink positions the cursor instead of emitting spaces, so a naive reader turns
+  "Claude usage limit reached" into "Claudeusagelimitreached" and no pattern in
+  `patterns.js` matches.
+
+  The foreground gate carries a different question here. The wrapper owns the pty, so
+  "is claude still in front?" is always yes; the useful question is whether the user is
+  mid-sentence in the input box — which the rendered line answers exactly, closing
+  DESIGN-NOTES §6, left open upstream because tmux can only guess at it. The
+  `/rate-limit-options` menu is exempt: it replaces the input box, and its selection marker
+  is the same `❯` glyph the prompt uses.
+
+  `node-pty` and `@xterm/headless` are `optionalDependencies`, imported lazily, so a POSIX
+  install never needs them built. Redirected output runs claude unwrapped (a pseudo-console
+  emits control sequences whatever the sink is), and `CLAUDE_AUTO_RETRY_NO_CONPTY=1` opts
+  out entirely. `claude-auto-retry install` writes a `claude` function into
+  `$PROFILE.CurrentUserAllHosts` for each PowerShell edition present, plus `~/.bashrc` for
+  Git Bash. `reconcile`, `install-timer` and the tmux status-bar segment remain tmux-only.
+
 ### Fixed
+- **The StopFailure hook command now quotes its own path.** It was written as
+  `node <path> _stopfailure-hook`; any install path containing a space — the norm on
+  Windows, possible anywhere — made Claude Code run `node C:\Program` on every API error,
+  so no marker was ever written and the event channel silently degraded to the scraper.
+
 - **A weekly-limit banner with a calendar date is now detected and parsed.** Weekly limits
   render their reset with a date — "You've hit your weekly limit · resets Aug 21 at 3pm
   (Australia/Brisbane)", a real Claude Code record surfaced by PR #56's fixture — and both

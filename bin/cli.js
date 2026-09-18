@@ -15,13 +15,21 @@ const __dirname = dirname(__filename);
 const SRC_DIR = join(__dirname, '..', 'src');
 const LAUNCHER_PATH = join(SRC_DIR, 'launcher.js');
 const WRAPPER_TEMPLATE = join(SRC_DIR, 'wrapper.sh');
+const WRAPPER_TEMPLATE_PS = join(SRC_DIR, 'wrapper.ps1');
 
 export const MARKER_START = '# >>> claude-auto-retry >>>';
 export const MARKER_END = '# <<< claude-auto-retry <<<';
 
 // --- Wrapper injection ---
 
-export async function injectWrapper(rcFile, launcherPath) {
+// PowerShell single-quoted strings escape a quote by doubling it. The launcher path is
+// interpolated into one, and a Windows profile can sit under a directory with an
+// apostrophe in it ("C:\Users\O'Brien\...").
+export function psQuote(path) {
+  return String(path).replace(/'/g, "''");
+}
+
+export async function injectWrapper(rcFile, launcherPath, templatePath = WRAPPER_TEMPLATE) {
   let content = '';
   try {
     content = await readFile(rcFile, 'utf-8');
@@ -29,8 +37,9 @@ export async function injectWrapper(rcFile, launcherPath) {
     // File doesn't exist, create it
   }
 
-  const template = await readFile(WRAPPER_TEMPLATE, 'utf-8');
-  const wrapper = template.replace(/__LAUNCHER_PATH__/g, launcherPath);
+  const template = await readFile(templatePath, 'utf-8');
+  const isPs = templatePath.endsWith('.ps1');
+  const wrapper = template.replace(/__LAUNCHER_PATH__/g, isPs ? psQuote(launcherPath) : launcherPath);
 
   // Remove existing wrapper if present
   const startIdx = content.indexOf(MARKER_START);
@@ -119,9 +128,86 @@ function checkTmux() {
   }
 }
 
+// --- Windows install ---
+// No tmux to check for: the Windows launch mode hosts claude in a ConPTY (see
+// src/win-launch.js). What has to be in place instead is the shell function, and the two
+// optional dependencies that mode needs.
+
+const PS_HOSTS = [
+  { name: 'Windows PowerShell', exe: 'powershell.exe' },
+  { name: 'PowerShell 7+', exe: 'pwsh.exe' },
+];
+
+// Ask each shell where its own profile lives rather than composing
+// ~/Documents/WindowsPowerShell/... by hand: OneDrive's Known Folder Move relocates
+// Documents on a large share of managed machines, and the composed path is then a file
+// nothing ever loads.
+export function profilePathFor(exe, run = execFileSync) {
+  try {
+    const out = run(exe, ['-NoProfile', '-NonInteractive', '-Command', '$PROFILE.CurrentUserAllHosts'], { encoding: 'utf-8' });
+    return out.trim() || null;
+  } catch {
+    return null;   // that PowerShell edition is not installed
+  }
+}
+
+async function checkConptyDeps() {
+  const missing = [];
+  for (const dep of ['node-pty', '@xterm/headless']) {
+    try { await import(dep); } catch { missing.push(dep); }
+  }
+  return missing;
+}
+
+async function cmdInstallWindows() {
+  console.log('claude-auto-retry: installing (Windows, ConPTY mode)...\n');
+
+  const missing = await checkConptyDeps();
+  if (missing.length) {
+    console.error(`Missing optional dependencies: ${missing.join(', ')}`);
+    console.error('  npm install -g node-pty @xterm/headless');
+    console.error('Install them, then re-run: claude-auto-retry install');
+    process.exit(1);
+  }
+  console.log('ConPTY dependencies OK');
+
+  const installed = [];
+  for (const host of PS_HOSTS) {
+    const profile = profilePathFor(host.exe);
+    if (!profile) continue;
+    await mkdir(dirname(profile), { recursive: true });
+    await injectWrapper(profile, LAUNCHER_PATH, WRAPPER_TEMPLATE_PS);
+    console.log(`Shell function added to ${profile} (${host.name})`);
+    installed.push(profile);
+  }
+
+  // Git Bash shares this machine's claude.exe, and the launcher picks the ConPTY mode by
+  // platform rather than by shell — so the POSIX wrapper is correct there too.
+  const bashrc = join(homedir(), '.bashrc');
+  if (existsSync(bashrc)) {
+    await injectWrapper(bashrc, LAUNCHER_PATH);
+    console.log(`Shell function added to ${bashrc} (Git Bash)`);
+    installed.push(bashrc);
+  }
+
+  if (installed.length === 0) {
+    console.error('\nNo PowerShell profile and no ~/.bashrc found. Nothing was installed.');
+    process.exit(1);
+  }
+
+  console.log(`\nInstalled! Launcher path: ${LAUNCHER_PATH}`);
+  console.log('\nOpen a new terminal, or reload the profile in this one:');
+  console.log('  . $PROFILE.CurrentUserAllHosts');
+  console.log('\nIf PowerShell refuses to load the profile, its execution policy is blocking it:');
+  console.log('  Set-ExecutionPolicy -Scope CurrentUser RemoteSigned');
+  console.log('\nTo run claude unwrapped for one session: $env:CLAUDE_AUTO_RETRY_NO_CONPTY = "1"');
+}
+
 // --- CLI commands ---
 
 async function cmdInstall() {
+  if (process.platform === 'win32') return cmdInstallWindows();
+
   console.log('claude-auto-retry: installing...\n');
 
   if (!checkTmux()) {
@@ -161,7 +247,14 @@ async function cmdInstall() {
 async function cmdUninstall() {
   const bashrc = join(homedir(), '.bashrc');
   const zshrc = join(homedir(), '.zshrc');
-  for (const rc of [bashrc, zshrc]) { await removeWrapper(rc); }
+  const files = [bashrc, zshrc];
+  if (process.platform === 'win32') {
+    for (const host of PS_HOSTS) {
+      const profile = profilePathFor(host.exe);
+      if (profile) files.push(profile);
+    }
+  }
+  for (const rc of files) { await removeWrapper(rc); }
   // Best-effort GC of tmux-status snapshot files left behind by monitors that died
   // without cleaning up (SIGKILL, host sleep/crash) — see src/status-file.js. Failure
   // here must never block the uninstall itself.
@@ -212,7 +305,9 @@ function stopFailureHookEntry() {
   // owned by the scraper usage path, not a seconds-scale event retry (see src/events.js).
   return {
     matcher: 'overloaded|server_error',
-    hooks: [{ type: 'command', command: `node ${__filename} ${HOOK_MARKER}`, timeout: 5 }],
+    // Quoted: a Windows install path routinely contains spaces ("C:\Program Files\…"),
+    // and an unquoted one made Claude Code run `node C:\Program` on every API error.
+    hooks: [{ type: 'command', command: `node "${__filename}" ${HOOK_MARKER}`, timeout: 5 }],
   };
 }
 

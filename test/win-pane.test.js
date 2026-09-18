@@ -116,15 +116,31 @@ describe('resolveWindowsMode', () => {
   });
 
   it('turns both pane modes into conpty on Windows', () => {
-    assert.equal(resolveWindowsMode('tmux-session', {}, 'win32'), 'conpty');
-    assert.equal(resolveWindowsMode('interactive', {}, 'win32'), 'conpty');
+    assert.equal(resolveWindowsMode('tmux-session', {}, 'win32', true), 'conpty');
+    assert.equal(resolveWindowsMode('interactive', {}, 'win32', true), 'conpty');
   });
 
   it('leaves print mode alone: it spawns no pane', () => {
-    assert.equal(resolveWindowsMode('print', {}, 'win32'), 'print');
+    assert.equal(resolveWindowsMode('print', {}, 'win32', true), 'print');
   });
 
   it('CLAUDE_AUTO_RETRY_NO_CONPTY=1 runs claude unwrapped', () => {
-    assert.equal(resolveWindowsMode('tmux-session', { CLAUDE_AUTO_RETRY_NO_CONPTY: '1' }, 'win32'), 'unwrapped');
+    assert.equal(resolveWindowsMode('tmux-session', { CLAUDE_AUTO_RETRY_NO_CONPTY: '1' }, 'win32', true), 'unwrapped');
+  });
+});
+
+describe('resolveWindowsMode and redirected output', () => {
+  it('declines ConPTY when stdout is not a terminal', () => {
+    // A pseudo-console emits control sequences whatever the sink is, so wrapping a
+    // redirected run would put escape noise in the file the user redirected into.
+    assert.equal(resolveWindowsMode('tmux-session', {}, 'win32', false), 'unwrapped');
+  });
+
+  it('still uses ConPTY on a real terminal', () => {
+    assert.equal(resolveWindowsMode('tmux-session', {}, 'win32', true), 'conpty');
+  });
+
+  it('leaves non-Windows alone whatever stdout is', () => {
+    assert.equal(resolveWindowsMode('tmux-session', {}, 'linux', false), 'tmux-session');
   });
 });

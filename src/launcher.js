@@ -388,9 +388,14 @@ export function chooseLaunchMode(args, env = process.env) {
 //
 // Kept apart from chooseLaunchMode so that function stays a pure statement of the POSIX
 // rules, unchanged and asserted by the existing tests on every platform.
-export function resolveWindowsMode(mode, env = process.env, platform = process.platform) {
+export function resolveWindowsMode(mode, env = process.env, platform = process.platform, isTTY = process.stdout.isTTY) {
   if (platform !== 'win32' || mode === 'print') return mode;
   if (env.CLAUDE_AUTO_RETRY_NO_CONPTY) return 'unwrapped';
+  // A pseudo-console emits control sequences unconditionally, so hosting claude in one
+  // when stdout is a pipe or a file turns `claude --version > out.txt` into escape noise.
+  // Nothing is lost by declining: a redirected session has no one watching a banner and
+  // no input box to type a retry into.
+  if (!isTTY) return 'unwrapped';
   return 'conpty';
 }
 
